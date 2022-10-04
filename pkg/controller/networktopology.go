@@ -751,7 +751,7 @@ func (ctrl *NetworkTopologyController) patchNetworkTopology(old, new *v1alpha1.N
 			return err
 		}
 
-		_, err = ctrl.ntClient.DiktyoV1alpha1().NetworkTopologies(old.Namespace).Patch(context.TODO(), old.Name, types.MergePatchType,
+		_, err = ctrl.ntClient.NetworktopologyV1alpha1().NetworkTopologies(old.Namespace).Patch(context.TODO(), old.Name, types.MergePatchType,
 			patch, metav1.PatchOptions{})
 		if err != nil {
 			return err

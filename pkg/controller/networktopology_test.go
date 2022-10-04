@@ -211,8 +211,8 @@ func TestNetworkTopologyController_Run(t *testing.T) {
 			ntInformerFactory := ntInformer.NewSharedInformerFactory(ntClient, controller.NoResyncPeriodFunc())
 			agInformerFactory := agInformer.NewSharedInformerFactory(agClient, controller.NoResyncPeriodFunc())
 
-			ntInfo := ntInformerFactory.Diktyo().V1alpha1().NetworkTopologies()
-			agInfo := agInformerFactory.Diktyo().V1alpha1().AppGroups()
+			ntInfo := ntInformerFactory.Networktopology().V1alpha1().NetworkTopologies()
+			agInfo := agInformerFactory.Appgroup().V1alpha1().AppGroups()
 
 			nodeInformer := informerFactory.Core().V1().Nodes()
 			podInformer := informerFactory.Core().V1().Pods()
@@ -225,7 +225,7 @@ func TestNetworkTopologyController_Run(t *testing.T) {
 
 			go ctrl.Run(1, ctx.Done())
 			err := wait.Poll(200*time.Millisecond, 1*time.Second, func() (done bool, err error) {
-				nt, err := ntClient.DiktyoV1alpha1().NetworkTopologies("default").Get(ctx, c.ntName, metav1.GetOptions{})
+				nt, err := ntClient.NetworktopologyV1alpha1().NetworkTopologies("default").Get(ctx, c.ntName, metav1.GetOptions{})
 				if err != nil {
 					return false, err
 				}

@@ -3,8 +3,8 @@ module networktopology-controller
 go 1.18
 
 require (
-	github.com/diktyo-io/appgroup-api v0.0.0-20220907142034-c45becbf1439
-	github.com/diktyo-io/networktopology-api v0.0.0-20220907141854-efad2cde3b18
+	github.com/diktyo-io/appgroup-api v0.0.1-alpha
+	github.com/diktyo-io/networktopology-api v0.0.1-alpha
 	github.com/spf13/pflag v1.0.5
 	k8s.io/api v0.23.10
 	k8s.io/apimachinery v0.23.10
