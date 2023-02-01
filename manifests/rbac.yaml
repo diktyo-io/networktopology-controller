@@ -1,0 +1,32 @@
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: networktopology-controller
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+- apiGroups: ["appgroup.diktyo.k8s.io"]
+  resources: ["appgroups"]
+  verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+- apiGroups: ["networktopology.diktyo.k8s.io"]
+  resources: ["networktopologies"]
+  verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: networktopology-controller
+subjects:
+- kind: ServiceAccount
+  name:  networktopology-controller
+roleRef:
+  kind: ClusterRole
+  name: networktopology-controller
+  apiGroup: rbac.authorization.k8s.io

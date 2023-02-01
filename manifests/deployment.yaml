@@ -1,0 +1,23 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: networktopology-controller
+  labels:
+    app: networktopology-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: networktopology-controller
+  template:
+    metadata:
+      labels:
+        app: networktopology-controller
+    spec:
+      serviceAccountName: networktopology-controller
+      containers:
+      - name: networktopology-controller
+        image: localhost:5000/networktopology-controller/controller:latest
+        command:
+        - /bin/controller
+        imagePullPolicy: IfNotPresent
