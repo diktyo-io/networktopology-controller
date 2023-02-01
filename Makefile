@@ -47,6 +47,14 @@ build-controller.arm64v8:
 local-image: clean
 	docker build -f ./build/controller/Dockerfile --build-arg ARCH="amd64" -t $(LOCAL_REGISTRY)/$(LOCAL_CONTROLLER_IMAGE) .
 
+.PHONY: local-image.amd64
+local-image.amd64: clean
+	docker build -f ./build/controller/Dockerfile --build-arg ARCH="amd64" -t $(LOCAL_REGISTRY)/$(LOCAL_CONTROLLER_IMAGE) .
+
+.PHONY: local-image.arm64v8
+local-image.arm64v8: clean
+	docker build -f ./build/controller/Dockerfile --build-arg ARCH="arm64v8"  -t $(LOCAL_REGISTRY)/$(LOCAL_CONTROLLER_IMAGE) .
+
 .PHONY: clean
 clean:
 	rm -rf ./bin
