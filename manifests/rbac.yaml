@@ -26,6 +26,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name:  networktopology-controller
+  namespace: network-aware-controllers
 roleRef:
   kind: ClusterRole
   name: networktopology-controller
