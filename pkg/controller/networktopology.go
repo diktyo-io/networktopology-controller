@@ -305,7 +305,7 @@ func (ctrl *NetworkTopologyController) podAdded(obj interface{}) {
 
 	// Get Dependencies of the given pod
 	dependencyList := util.GetDependencyList(pod, ag)
-	klog.V(5).Info("dependencyList: ", dependencyList)
+	klog.V(5).InfoS("dependencyList: ", dependencyList)
 
 	// If the pod has no dependencies, return
 	if dependencyList == nil {
@@ -778,21 +778,20 @@ func updateGraph(ctrl *NetworkTopologyController, nodes []*v1.Node, configmap *v
 			if n1.Name != n2.Name {
 				r2 := util.GetNodeRegion(n2)
 				z2 := util.GetNodeZone(n2)
-
-				klog.V(5).Infof("N1: %v - N2: %v - Region1: %v - Region2: %v - Zone1: %v - Zone2: %v", n1.Name, n2.Name, r1, r2, z1, z2)
+				klog.V(5).InfoS("topology_labels:", "N1_hostname", n1.Name, "N2_hostname", n2.Name, "N1_region", r1, "N2_region", r2,
+					"N1_Zone", z1, "N2_Zone", z2)
 
 				// get cost from configmap
 				key := util.GetConfigmapCostQuery(n1.Name, n2.Name)
 
-				klog.V(5).Infof("Key: %v", key)
-				klog.V(5).Infof("configmap.Data: %v", configmap.Data)
+				klog.V(5).InfoS("data:", "key", key, "configmap.Data", configmap.Data)
 
 				cost, err := strconv.Atoi(configmap.Data[key])
 				if err != nil {
 					klog.ErrorS(err, "Error converting cost...")
 				}
 
-				klog.V(5).Infof("Cost: %v", cost)
+				klog.V(5).InfoS("retrieved_cost:", "cost", cost)
 
 				// Update Cost in the graph
 				ctrl.nodeGraph.AddEdge(n1.Name, n2.Name, cost)
@@ -853,7 +852,7 @@ func getRegionList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualRegi
 		}
 	}
 
-	klog.V(5).Infof("[getRegionList] Regions %v ", regions)
+	klog.V(5).InfoS("getRegionList:", "regions", regions)
 
 	for _, r1 := range regions {
 		// init vars
@@ -870,7 +869,7 @@ func getRegionList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualRegi
 
 				originCosts := util.FindOriginCosts(manualRegionCosts, r1)
 
-				klog.V(5).Infof("[getRegionList] originCosts: %v", originCosts)
+				klog.V(5).InfoS("getRegionList: ", "originCosts", originCosts)
 
 				bandwidthCapacity := *resource.NewScaledQuantity(1, resource.Giga)
 
@@ -885,7 +884,7 @@ func getRegionList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualRegi
 					}
 				}
 
-				klog.V(5).Infof("[getRegionList] Bandwidth Capacity between %v and %v: %v", r1, r2, bandwidthCapacity)
+				klog.V(5).InfoS("getRegionList:", "r1", r1, "r2", r2, "bandwidth_capacity", bandwidthCapacity.Value())
 
 				if ok {
 					info := v1alpha1.CostInfo{
@@ -894,7 +893,7 @@ func getRegionList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualRegi
 						BandwidthAllocated: allocatable,
 						NetworkCost:        int64(cost),
 					}
-					klog.V(5).Infof("[getRegionList] OK: Origin %v - Destination %v - Cost: %v - Allocatable: %v", r1, r2, info.NetworkCost, info.BandwidthAllocated)
+					klog.V(5).InfoS("getRegionList:", "origin", r1, "Destination", r2, "Cost", info.NetworkCost, "Allocatable", info.BandwidthAllocated.Value())
 					costInfo = append(costInfo, info)
 				} else {
 					info := v1alpha1.CostInfo{
@@ -903,7 +902,7 @@ func getRegionList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualRegi
 						BandwidthAllocated: *resource.NewQuantity(0, resource.DecimalSI), // consider as zero
 						NetworkCost:        int64(cost),
 					}
-					klog.V(5).Infof("[getRegionList] Bandwidth allocatable Not found: Origin %v - Destination %v - Cost: %v - Allocatable: %v", r1, r2, info.NetworkCost, info.BandwidthAllocated)
+					klog.V(5).InfoS("getRegionList:", "origin", r1, "Destination", r2, "Cost", info.NetworkCost, "Allocatable", info.BandwidthAllocated.Value())
 					costInfo = append(costInfo, info)
 				}
 			}
