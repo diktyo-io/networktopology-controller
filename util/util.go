@@ -21,8 +21,9 @@ import (
 	appgroupv1alpha1 "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup/v1alpha1"
 	"github.com/diktyo-io/networktopology-api/pkg/apis/networktopology/v1alpha1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
-	"k8s.io/klog/v2"
+	klog "k8s.io/klog/v2"
 )
 
 // CreateMergePatch return patch generated from original and new interfaces
@@ -74,32 +75,18 @@ type ScheduledInfo struct {
 
 type ScheduledList []ScheduledInfo
 
-func GetNodeRegion(node *v1.Node) string {
+func GetNodeLabel(node *v1.Node, topologyLabel string) string {
 	labels := node.Labels
 	if labels == nil {
 		return ""
 	}
 
-	zone, _ := labels[v1.LabelTopologyRegion]
-	if zone == "" {
+	value, _ := labels[topologyLabel]
+	if value == "" {
 		return ""
 	}
 
-	return zone
-}
-
-func GetNodeZone(node *v1.Node) string {
-	labels := node.Labels
-	if labels == nil {
-		return ""
-	}
-
-	region, _ := labels[v1.LabelTopologyZone]
-	if region == "" {
-		return ""
-	}
-
-	return region
+	return value
 }
 
 // Sort TopologyList by TopologyKey
@@ -209,4 +196,56 @@ func GetScheduledList(pods []*v1.Pod) ScheduledList {
 		}
 	}
 	return scheduledList
+}
+
+func GetMinAvgMax(array []int) (int, int, int) {
+	var min int = 10000
+	var avg int = 0
+	var max int = 0
+
+	for _, value := range array {
+		if max < value {
+			max = value
+		}
+		if min > value {
+			min = value
+		}
+		avg += value
+	}
+
+	// Check if costs were added
+	if len(array) != 0 {
+		avg = avg / len(array)
+	} else {
+		avg = 0
+		min = 0
+	}
+
+	return min, avg, max
+}
+
+func GetMinAvgMaxBandwidth(array []resource.Quantity) (resource.Quantity, resource.Quantity, resource.Quantity) {
+	var min = *resource.NewQuantity(1000000000, resource.DecimalSI)
+	var avg = *resource.NewQuantity(0, resource.DecimalSI)
+	var max = *resource.NewQuantity(0, resource.DecimalSI)
+
+	for _, value := range array {
+		if max.Cmp(value) == -1 {
+			max = value
+		}
+		if min.Cmp(value) == 1 {
+			min = value
+		}
+		avg.Add(value)
+	}
+
+	// Check if bandwidths were added
+	if len(array) != 0 {
+		avg = *resource.NewQuantity(avg.Value()/int64(len(array)), resource.DecimalSI)
+	} else {
+		avg = *resource.NewQuantity(0, resource.DecimalSI)
+		min = *resource.NewQuantity(0, resource.DecimalSI)
+	}
+
+	return min, avg, max
 }

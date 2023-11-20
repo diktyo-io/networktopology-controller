@@ -8,28 +8,33 @@ import (
 )
 
 const (
-	// netperf.p90.latency.milliseconds.origin.$n1.destination.$n2=$value\n";
+	// ConfigmapTemplate netperf.p90.latency.milliseconds.origin.$n1.destination.$n2=$value\n";
 	ConfigmapTemplate = "netperf.p90.latency.milliseconds.origin.%s.destination.%s"
 )
 
-// key for regions / zones concerning networkTopology Controller
+// TopologyKey key for regions / zones concerning networkTopology Controller
 type TopologyKey struct {
 	Region string
 	Zone   string
 }
 
-// key for zone / zone concerning networkTopology Controller
+// ZoneKey key for zone / zone concerning networkTopology Controller
 type ZoneKey struct {
 	Z1 string
 	Z2 string
 }
 
+// SegmentKey key for segment / segment concerning networkTopology Controller
+type SegmentKey struct {
+	S1 string
+	S2 string
+}
+
 // Graph and edge structures for shortest path
 type edge struct {
-	node string
-	//region string
-	//zone   string
+	node   string
 	weight int
+	// bandwidth resource.Quantity
 }
 
 func GetConfigmapCostQuery(origin string, destination string) string {
@@ -53,6 +58,25 @@ func FindOriginBandwidthCapacity(costList []v1alpha1.CostInfo, destination strin
 	}
 	// Bandwidth Capacity not found
 	return resource.MustParse("0")
+}
+
+// FindOriginIsAllowed returns true/false if the communication is allowed to a certain destination
+func FindOriginIsAllowed(costList []v1alpha1.CostInfo, destination string) bool {
+	low := 0
+	high := len(costList) - 1
+
+	for low <= high {
+		mid := (low + high) / 2
+		if costList[mid].Destination == destination {
+			return costList[mid].IsAllowed // Return the isAllowed value (bool)
+		} else if costList[mid].Destination < destination {
+			low = mid + 1
+		} else if costList[mid].Destination > destination {
+			high = mid - 1
+		}
+	}
+	// IsAllowed not found: assume true
+	return false
 }
 
 type Graph struct {
