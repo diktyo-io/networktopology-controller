@@ -19,6 +19,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	util "networktopology-controller/util"
+	"reflect"
+	"strconv"
+	"sync"
+	"time"
+
 	appgroupv1alpha1 "github.com/diktyo-io/appgroup-api/pkg/apis/appgroup/v1alpha1"
 	aginformers "github.com/diktyo-io/appgroup-api/pkg/generated/informers/externalversions/appgroup/v1alpha1"
 	ntinformers "github.com/diktyo-io/networktopology-api/pkg/generated/informers/externalversions/networktopology/v1alpha1"
@@ -28,17 +34,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	corelister "k8s.io/client-go/listers/core/v1"
 	klog "k8s.io/klog/v2"
-	util "networktopology-controller/util"
-	"reflect"
-	"strconv"
-	"sync"
-	"time"
 
 	aglisters "github.com/diktyo-io/appgroup-api/pkg/generated/listers/appgroup/v1alpha1"
 	v1alpha1 "github.com/diktyo-io/networktopology-api/pkg/apis/networktopology/v1alpha1"
 
 	clientset "github.com/diktyo-io/networktopology-api/pkg/generated/clientset/versioned"
 	ntlisters "github.com/diktyo-io/networktopology-api/pkg/generated/listers/networktopology/v1alpha1"
+
+	"sort"
 
 	v1 "k8s.io/api/core/v1"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
@@ -51,33 +54,35 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
-	"sort"
 )
 
 // NetworkTopologyController is a controller that process Network Topology using provided Handler interface
 type NetworkTopologyController struct {
-	eventRecorder         record.EventRecorder
-	ntQueue               workqueue.RateLimitingInterface
-	ntLister              ntlisters.NetworkTopologyLister
-	agLister              aglisters.AppGroupLister
-	nodeLister            corelister.NodeLister
-	podLister             corelister.PodLister
-	configmapLister       corelister.ConfigMapLister
-	ntListerSynced        cache.InformerSynced
-	nodeListerSynced      cache.InformerSynced
-	podListerSynced       cache.InformerSynced
-	configmapListerSynced cache.InformerSynced
-	ntClient              clientset.Interface
-	lock                  sync.RWMutex // lock for network graph and cost calculation.
-	nodeCount             int64        // Number of nodes in the cluster.
-	regionGraph           *util.Graph  // Network Graph for region cost calculation.
-	zoneGraph             *util.Graph  // Network Graph for zone cost calculation.
-	nodeGraph             *util.Graph  // Network Graph for node cost calculation.
-	segmentGraph          *util.Graph  // Network Graph for segment cost calculation.
-	topologyMap           map[util.TopologyKey]bool
-	ZoneMap               map[util.ZoneKey]bool
-	SegmentMap            map[util.SegmentKey]bool
-	BandwidthAllocatable  map[util.CostKey]resource.Quantity
+	eventRecorder           record.EventRecorder
+	ntQueue                 workqueue.RateLimitingInterface
+	ntLister                ntlisters.NetworkTopologyLister
+	agLister                aglisters.AppGroupLister
+	nodeLister              corelister.NodeLister
+	podLister               corelister.PodLister
+	configmapLister         corelister.ConfigMapLister
+	ntListerSynced          cache.InformerSynced
+	nodeListerSynced        cache.InformerSynced
+	podListerSynced         cache.InformerSynced
+	configmapListerSynced   cache.InformerSynced
+	ntClient                clientset.Interface
+	lock                    sync.RWMutex // lock for network graph and cost calculation.
+	nodeCount               int64        // Number of nodes in the cluster.
+	regionGraph             *util.Graph  // Network Graph for region cost calculation.
+	zoneGraph               *util.Graph  // Network Graph for zone cost calculation.
+	nodeGraph               *util.Graph  // Network Graph for node cost calculation.
+	segmentGraph            *util.Graph  // Network Graph for segment cost calculation.
+	topologyMap             map[util.TopologyKey]bool
+	ZoneMap                 map[util.ZoneKey]bool
+	SegmentMap              map[util.SegmentKey]bool
+	BandwidthAllocatable    map[util.CostKey]resource.Quantity
+	weightCalculationPeriod time.Duration   // Configurable period for weight recalculation.
+	dirtyNTs                map[string]bool // NTs whose spec changed and need forced recalculation.
+	dirtyLock               sync.Mutex
 }
 
 // NewNetworkTopologyController returns a new *NewNetworkTopologyController
@@ -87,7 +92,8 @@ func NewNetworkTopologyController(client kubernetes.Interface,
 	nodeInformer coreinformer.NodeInformer,
 	podInformer coreinformer.PodInformer,
 	comfigmapInformer coreinformer.ConfigMapInformer,
-	ntClient clientset.Interface) *NetworkTopologyController {
+	ntClient clientset.Interface,
+	weightCalculationPeriod time.Duration) *NetworkTopologyController {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: client.CoreV1().Events(v1.NamespaceAll)})
 
@@ -143,6 +149,9 @@ func NewNetworkTopologyController(client kubernetes.Interface,
 	//ctrl.BandwidthCapacity = make(map[util.CostKey]resource.Quantity)
 	ctrl.BandwidthAllocatable = make(map[util.CostKey]resource.Quantity)
 
+	ctrl.weightCalculationPeriod = weightCalculationPeriod
+	ctrl.dirtyNTs = make(map[string]bool)
+
 	return ctrl
 }
 
@@ -180,6 +189,21 @@ func (ctrl *NetworkTopologyController) ntAdded(obj interface{}) {
 
 // ntUpdated reacts to a NT update
 func (ctrl *NetworkTopologyController) ntUpdated(old, new interface{}) {
+	oldNT, oldOk := old.(*v1alpha1.NetworkTopology)
+	newNT, newOk := new.(*v1alpha1.NetworkTopology)
+
+	// If the spec has changed (e.g. via kubectl apply/patch), mark this NT as dirty
+	// so that syncHandler forces an immediate weight recalculation regardless of the
+	// time-based throttle.
+	if oldOk && newOk && !reflect.DeepEqual(oldNT.Spec, newNT.Spec) {
+		key, err := cache.MetaNamespaceKeyFunc(new)
+		if err == nil {
+			ctrl.dirtyLock.Lock()
+			ctrl.dirtyNTs[key] = true
+			ctrl.dirtyLock.Unlock()
+			klog.V(5).InfoS("NT spec changed, marking as dirty for forced recalculation", "networkTopology", key)
+		}
+	}
 	ctrl.ntAdded(new)
 }
 
@@ -650,6 +674,14 @@ func (ctrl *NetworkTopologyController) syncHandler(key string) error {
 	// Weights
 	ctrl.lock.Lock()
 
+	// Check if this NT was marked dirty (spec changed via apply/patch) to force recalculation.
+	ctrl.dirtyLock.Lock()
+	isDirty := ctrl.dirtyNTs[key]
+	if isDirty {
+		delete(ctrl.dirtyNTs, key)
+	}
+	ctrl.dirtyLock.Unlock()
+
 	if ntCopy.Status.WeightCalculationTime.IsZero() {
 		klog.V(5).InfoS("Initial Calculation of Weight List...")
 
@@ -701,8 +733,12 @@ func (ctrl *NetworkTopologyController) syncHandler(key string) error {
 
 		ntCopy.Status.WeightCalculationTime = metav1.Time{Time: time.Now()}
 
-	} else if time.Now().Sub(ntCopy.Status.WeightCalculationTime.Time) > 5*time.Minute {
-		klog.V(5).InfoS("Recalculation of Weight List... Every 5 min...")
+	} else if isDirty || time.Now().Sub(ntCopy.Status.WeightCalculationTime.Time) > ctrl.weightCalculationPeriod {
+		if isDirty {
+			klog.V(5).InfoS("Forced recalculation of Weight List due to spec change...")
+		} else {
+			klog.V(5).InfoS("Recalculation of Weight List...", "period", ctrl.weightCalculationPeriod)
+		}
 
 		var manualCosts v1alpha1.TopologyList
 		var manualRegionCosts v1alpha1.OriginList

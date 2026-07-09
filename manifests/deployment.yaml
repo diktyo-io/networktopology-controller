@@ -21,4 +21,7 @@ spec:
         image: localhost:5000/networktopology-controller/controller:latest
         command:
         - /bin/controller
+        args:
+        - --incluster=true
+        - --weightCalculationPeriod=1m
         imagePullPolicy: IfNotPresent

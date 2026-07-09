@@ -18,8 +18,9 @@ package app
 
 import (
 	"context"
-	"k8s.io/klog/v2"
 	"os"
+
+	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apiserver/pkg/server"
@@ -34,9 +35,10 @@ import (
 	agclientset "github.com/diktyo-io/appgroup-api/pkg/generated/clientset/versioned"
 	ntclientset "github.com/diktyo-io/networktopology-api/pkg/generated/clientset/versioned"
 
+	"networktopology-controller/pkg/controller"
+
 	aginformers "github.com/diktyo-io/appgroup-api/pkg/generated/informers/externalversions"
 	ntinformers "github.com/diktyo-io/networktopology-api/pkg/generated/informers/externalversions"
-	"networktopology-controller/pkg/controller"
 )
 
 func newConfig(kubeconfig, master string, inCluster bool) (*restclient.Config, error) {
@@ -80,7 +82,7 @@ func Run(s *ServerRunOptions) error {
 	nodeInformer := coreInformerFactory.Core().V1().Nodes()
 	configmapInformer := coreInformerFactory.Core().V1().ConfigMaps()
 
-	ntCtrl := controller.NewNetworkTopologyController(kubeClient, ntInformer, agInformer, nodeInformer, podInformer, configmapInformer, ntClient)
+	ntCtrl := controller.NewNetworkTopologyController(kubeClient, ntInformer, agInformer, nodeInformer, podInformer, configmapInformer, ntClient, s.WeightCalculationPeriod)
 
 	run := func(ctx context.Context) {
 		go ntCtrl.Run(s.Workers, ctx.Done())

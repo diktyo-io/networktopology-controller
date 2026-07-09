@@ -17,17 +17,20 @@ limitations under the License.
 package app
 
 import (
+	"time"
+
 	"github.com/spf13/pflag"
 )
 
 type ServerRunOptions struct {
-	KubeConfig           string
-	MasterUrl            string
-	InCluster            bool
-	ApiServerQPS         int
-	ApiServerBurst       int
-	Workers              int
-	EnableLeaderElection bool
+	KubeConfig              string
+	MasterUrl               string
+	InCluster               bool
+	ApiServerQPS            int
+	ApiServerBurst          int
+	Workers                 int
+	EnableLeaderElection    bool
+	WeightCalculationPeriod time.Duration
 }
 
 func NewServerRunOptions() *ServerRunOptions {
@@ -44,4 +47,5 @@ func (s *ServerRunOptions) addAllFlags() {
 	pflag.IntVar(&s.ApiServerBurst, "burst", 10, "burst of query apiserver.")
 	pflag.IntVar(&s.Workers, "workers", 1, "workers of appgroup-controllers.")
 	pflag.BoolVar(&s.EnableLeaderElection, "enableLeaderElection", s.EnableLeaderElection, "If EnableLeaderElection for controller.")
+	pflag.DurationVar(&s.WeightCalculationPeriod, "weightCalculationPeriod", 1*time.Minute, "Period for recalculating network topology weights (e.g. 1m, 5m, 10m).")
 }
