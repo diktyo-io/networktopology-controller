@@ -258,36 +258,61 @@ func (ctrl *NetworkTopologyController) nodeAdded(obj interface{}) {
 
 // nodeUpdated reacts to a node update
 func (ctrl *NetworkTopologyController) nodeUpdated(old, new interface{}) {
-	// Check if zone label has been modified ...
 	newNode, ok := new.(*v1.Node)
 	if !ok {
-		klog.Error("unexpected object type in node added")
+		klog.Error("unexpected object type in node updated")
 		return
 	}
 
-	oldNode, err := old.(*v1.Node)
-	if !err {
-		klog.Error("unexpected object type in node added")
+	oldNode, ok := old.(*v1.Node)
+	if !ok {
+		klog.Error("unexpected object type in node updated")
 		return
 	}
 
-	var oldRegion string
-	var oldZone string
-	if old != nil {
-		oldRegion = util.GetNodeLabel(oldNode, v1.LabelTopologyRegion)
-		oldZone = util.GetNodeLabel(oldNode, v1.LabelTopologyZone)
-	}
+	oldRegion := util.GetNodeLabel(oldNode, v1.LabelTopologyRegion)
+	oldZone := util.GetNodeLabel(oldNode, v1.LabelTopologyZone)
+	oldSegment := util.GetNodeLabel(oldNode, string(v1alpha1.NetworkTopologySegment))
 
 	newRegion := util.GetNodeLabel(newNode, v1.LabelTopologyRegion)
 	newZone := util.GetNodeLabel(newNode, v1.LabelTopologyZone)
+	newSegment := util.GetNodeLabel(newNode, string(v1alpha1.NetworkTopologySegment))
 
-	// If the zone of the node did not changed, we don't need to do anything.
-	if oldZone == newZone && oldRegion == newRegion {
+	// If no topology label changed, nothing to do.
+	if oldZone == newZone && oldRegion == newRegion && oldSegment == newSegment {
 		return
 	}
-	// Otherwise update zone of the given Node
+
+	// Update the internal topology state.
 	ctrl.nodeDeleted(old)
 	ctrl.nodeAdded(new)
+
+	// Topology changed — force all NTs to recompute immediately so the scheduler
+	// sees the new segment/zone/region distribution without waiting for the
+	// weightCalculationPeriod to expire.
+	ctrl.enqueueAllNTs()
+}
+
+// enqueueAllNTs marks every known NetworkTopology as dirty and adds it to the
+// work queue so that weight recalculation happens on the next sync cycle.
+func (ctrl *NetworkTopologyController) enqueueAllNTs() {
+	nts, err := ctrl.ntLister.List(labels.Everything())
+	if err != nil {
+		klog.ErrorS(err, "Failed to list NetworkTopologies after node topology label change")
+		return
+	}
+	for _, nt := range nts {
+		key, err := cache.MetaNamespaceKeyFunc(nt)
+		if err != nil {
+			runtime.HandleError(err)
+			continue
+		}
+		ctrl.dirtyLock.Lock()
+		ctrl.dirtyNTs[key] = true
+		ctrl.dirtyLock.Unlock()
+		ctrl.ntQueue.Add(key)
+		klog.V(5).InfoS("Node topology label changed, forcing NT recomputation", "networkTopology", key)
+	}
 }
 
 // nodeDeleted reacts to a node removal
@@ -359,7 +384,7 @@ func (ctrl *NetworkTopologyController) podAdded(obj interface{}) {
 	scheduledList := util.GetScheduledList(pods)
 	klog.V(5).Info("scheduledList: ", scheduledList)
 
-	// Check if pods already available
+	// Check if pods are already available
 	if scheduledList == nil {
 		return
 	}
@@ -516,7 +541,7 @@ func (ctrl *NetworkTopologyController) podDeleted(obj interface{}) {
 
 		// Retrieve Region and Zone from node
 		region := util.GetNodeLabel(hostname, v1.LabelTopologyRegion)
-		zone := util.GetNodeLabel(hostname, v1.LabelTopologyRegion)
+		zone := util.GetNodeLabel(hostname, v1.LabelTopologyZone)
 
 		// delete reserved bandwidth
 		for _, podAllocated := range scheduledList { // For each pod already allocated
@@ -863,10 +888,9 @@ func updateGraph(ctrl *NetworkTopologyController, nodes []*v1.Node, configmap *v
 				}] = true
 
 				if r1 != r2 { // Different region
-					current, err := ctrl.regionGraph.GetPath(r1, r2)
-					if err != nil { // add average cost!
+					current, existsErr := ctrl.regionGraph.GetPath(r1, r2)
+					if existsErr == nil { // edge already exists: average with new measurement
 						cost = (cost + current) / 2
-						ctrl.regionGraph.AddEdge(r1, r2, cost)
 					}
 					ctrl.regionGraph.AddEdge(r1, r2, cost)
 				} else if z1 != z2 { // Same region Different zone
@@ -876,10 +900,9 @@ func updateGraph(ctrl *NetworkTopologyController, nodes []*v1.Node, configmap *v
 						Z2: z2,
 					}] = true
 
-					current, err := ctrl.zoneGraph.GetPath(z1, z2)
-					if err != nil { // Add average cost
+					current, existsErr := ctrl.zoneGraph.GetPath(z1, z2)
+					if existsErr == nil { // edge already exists: average with new measurement
 						cost = (cost + current) / 2
-						ctrl.zoneGraph.AddEdge(z1, z2, cost)
 					}
 					ctrl.zoneGraph.AddEdge(z1, z2, cost)
 				}
@@ -919,6 +942,9 @@ func getOriginList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualCost
 
 	for _, n := range nodes {
 		r := util.GetNodeLabel(n, label)
+		if r == "" {
+			continue
+		}
 		if !contains(elements, r) {
 			elements = append(elements, r)
 		}
@@ -933,7 +959,7 @@ func getOriginList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualCost
 		var costInterArray []int
 		var costIntraArray []int
 
-		// var bandwidthIntraArray []resource.Quantity
+		var bandwidthIntraArray []resource.Quantity
 		var bandwidthInterArray []resource.Quantity
 
 		for _, e2 := range elements {
@@ -1000,7 +1026,7 @@ func getOriginList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualCost
 			}
 		}
 
-		// calculate origin intra statistics: costs between different nodes
+		// calculate origin intra statistics: costs and bandwidth between nodes within the same origin
 		klog.V(5).InfoS("[getOriginList] ", "nodeGraph", ctrl.nodeGraph)
 		for _, n1 := range nodes {
 			e_n1 := util.GetNodeLabel(n1, label)
@@ -1008,9 +1034,12 @@ func getOriginList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualCost
 				e_n2 := util.GetNodeLabel(n2, label)
 				if n1 != n2 {
 					if e_n1 == e_n2 && e_n1 == e1 {
-						klog.V(5).InfoS("[getZoneList] IntraStatistics", "n1", n1.Name, "n2", n2.Name, "element", e1)
+						klog.V(5).InfoS("[getOriginList] IntraStatistics", "n1", n1.Name, "n2", n2.Name, "element", e1)
 						cost, _ := ctrl.nodeGraph.GetPath(n1.Name, n2.Name)
 						costIntraArray = append(costIntraArray, cost)
+						// Intra-origin bandwidth is not tracked per node pair; use the default
+						// capacity (1 Gi) — the same default applied to inter-origin links.
+						bandwidthIntraArray = append(bandwidthIntraArray, *resource.NewScaledQuantity(1, resource.Giga))
 					}
 				}
 			}
@@ -1021,26 +1050,28 @@ func getOriginList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualCost
 
 		minInter, avgInter, maxInter := util.GetMinAvgMax(costInterArray)
 		minIntra, avgIntra, maxIntra := util.GetMinAvgMax(costIntraArray)
-		minB, avgB, maxB := util.GetMinAvgMaxBandwidth(bandwidthInterArray)
+		minBInter, avgBInter, maxBInter := util.GetMinAvgMaxBandwidth(bandwidthInterArray)
+		minBIntra, avgBIntra, maxBIntra := util.GetMinAvgMaxBandwidth(bandwidthIntraArray)
 
 		klog.InfoS("[getOriginList] InterStatistics - cost", "origin", e1, "costs", costInterArray, "min", minInter, "avg", avgInter, "max", maxInter)
 		klog.InfoS("[getOriginList] IntraStatistics - cost", "origin", e1, "costs", costIntraArray, "min", minIntra, "avg", avgIntra, "max", maxIntra)
-		klog.InfoS("[getOriginList] Inter/Intra Statistics - bandwidth", "origin", e1, "bandwidths", bandwidthInterArray, "min", minB, "avg", avgB, "max", maxB)
+		klog.InfoS("[getOriginList] InterStatistics - bandwidth", "origin", e1, "bandwidths", bandwidthInterArray, "min", minBInter, "avg", avgBInter, "max", maxBInter)
+		klog.InfoS("[getOriginList] IntraStatistics - bandwidth", "origin", e1, "bandwidths", bandwidthIntraArray, "min", minBIntra, "avg", avgBIntra, "max", maxBIntra)
 
 		originInfo := v1alpha1.OriginInfo{
 			Origin: e1,
 			OriginInterStatistics: v1alpha1.NetworkTopologyStatistics{
-				MinBandwidth: minB,
-				AvgBandwidth: avgB,
-				MaxBandwidth: maxB,
+				MinBandwidth: minBInter,
+				AvgBandwidth: avgBInter,
+				MaxBandwidth: maxBInter,
 				MinCost:      int64(minInter),
 				AvgCost:      int64(avgInter),
 				MaxCost:      int64(maxInter),
 			},
 			OriginIntraStatistics: v1alpha1.NetworkTopologyStatistics{
-				MinBandwidth: minB,
-				AvgBandwidth: avgB,
-				MaxBandwidth: maxB,
+				MinBandwidth: minBIntra,
+				AvgBandwidth: avgBIntra,
+				MaxBandwidth: maxBIntra,
 				MinCost:      int64(minIntra),
 				AvgCost:      int64(avgIntra),
 				MaxCost:      int64(maxIntra),
@@ -1180,7 +1211,7 @@ func getZoneList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualZoneCo
 
 		// Intra
 		var costIntraArray []int
-		//var bandwidthIntraArray []resource.Quantity
+		var bandwidthIntraArray []resource.Quantity
 
 		for _, z2 := range zones {
 			if z1 != z2 {
@@ -1248,7 +1279,7 @@ func getZoneList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualZoneCo
 			}
 		}
 
-		// calculate zone intra statistics: costs between different nodes
+		// calculate zone intra statistics: costs and bandwidth between nodes within the same zone
 		klog.V(5).InfoS("[getZoneList] ", "nodeGraph", ctrl.nodeGraph)
 		for _, n1 := range nodes {
 			z_n1 := util.GetNodeLabel(n1, v1.LabelTopologyZone)
@@ -1259,6 +1290,9 @@ func getZoneList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualZoneCo
 						klog.V(5).InfoS("[getZoneList] IntraStatistics", "n1", n1.Name, "n2", n2.Name, "zone", z1)
 						cost, _ := ctrl.nodeGraph.GetPath(n1.Name, n2.Name)
 						costIntraArray = append(costIntraArray, cost)
+						// Intra-zone bandwidth is not tracked per node pair; use the default
+						// capacity (1 Gi) — the same default applied to inter-zone links.
+						bandwidthIntraArray = append(bandwidthIntraArray, *resource.NewScaledQuantity(1, resource.Giga))
 					}
 				}
 			}
@@ -1269,26 +1303,28 @@ func getZoneList(ctrl *NetworkTopologyController, nodes []*v1.Node, manualZoneCo
 
 		minInter, avgInter, maxInter := util.GetMinAvgMax(costInterArray)
 		minIntra, avgIntra, maxIntra := util.GetMinAvgMax(costIntraArray)
-		minB, avgB, maxB := util.GetMinAvgMaxBandwidth(bandwidthInterArray)
+		minBInter, avgBInter, maxBInter := util.GetMinAvgMaxBandwidth(bandwidthInterArray)
+		minBIntra, avgBIntra, maxBIntra := util.GetMinAvgMaxBandwidth(bandwidthIntraArray)
 
 		klog.InfoS("[getZoneList] InterStatistics - cost", "zone", z1, "costs", costInterArray, "min", minInter, "avg", avgInter, "max", maxInter)
 		klog.InfoS("[getZoneList] IntraStatistics - cost", "zone", z1, "costs", costIntraArray, "min", minIntra, "avg", avgIntra, "max", maxIntra)
-		klog.InfoS("[getZoneList] Inter/Intra Statistics - bandwidth", "zone", z1, "bandwidths", bandwidthInterArray, "min", minB, "avg", avgB, "max", maxB)
+		klog.InfoS("[getZoneList] InterStatistics - bandwidth", "zone", z1, "bandwidths", bandwidthInterArray, "min", minBInter, "avg", avgBInter, "max", maxBInter)
+		klog.InfoS("[getZoneList] IntraStatistics - bandwidth", "zone", z1, "bandwidths", bandwidthIntraArray, "min", minBIntra, "avg", avgBIntra, "max", maxBIntra)
 
 		originInfo := v1alpha1.OriginInfo{
 			Origin: z1,
 			OriginInterStatistics: v1alpha1.NetworkTopologyStatistics{
-				MinBandwidth: minB,
-				AvgBandwidth: avgB,
-				MaxBandwidth: maxB,
+				MinBandwidth: minBInter,
+				AvgBandwidth: avgBInter,
+				MaxBandwidth: maxBInter,
 				MinCost:      int64(minInter),
 				AvgCost:      int64(avgInter),
 				MaxCost:      int64(maxInter),
 			},
 			OriginIntraStatistics: v1alpha1.NetworkTopologyStatistics{
-				MinBandwidth: minB,
-				AvgBandwidth: avgB,
-				MaxBandwidth: maxB,
+				MinBandwidth: minBIntra,
+				AvgBandwidth: avgBIntra,
+				MaxBandwidth: maxBIntra,
 				MinCost:      int64(minIntra),
 				AvgCost:      int64(avgIntra),
 				MaxCost:      int64(maxIntra),

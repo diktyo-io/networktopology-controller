@@ -456,7 +456,7 @@ func TestNetworkTopologyController_Run(t *testing.T) {
 			podInformer := informerFactory.Core().V1().Pods()
 			configmapInformer := informerFactory.Core().V1().ConfigMaps()
 
-			ctrl := NewNetworkTopologyController(kubeClient, ntInfo, agInfo, nodeInformer, podInformer, configmapInformer, ntClient)
+			ctrl := NewNetworkTopologyController(kubeClient, ntInfo, agInfo, nodeInformer, podInformer, configmapInformer, ntClient, 5*time.Minute)
 
 			ntInformerFactory.Start(ctx.Done())
 			informerFactory.Start(ctx.Done())
