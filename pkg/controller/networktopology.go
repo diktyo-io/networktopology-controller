@@ -228,32 +228,27 @@ func (ctrl *NetworkTopologyController) nodeAdded(obj interface{}) {
 
 	region := util.GetNodeLabel(node, v1.LabelTopologyRegion)
 	zone := util.GetNodeLabel(node, v1.LabelTopologyZone)
+	segment := util.GetNodeLabel(node, string(v1alpha1.NetworkTopologySegment))
+
+	hasTopology := region != "" || zone != "" || segment != ""
 
 	func() {
 		ctrl.lock.Lock()
 		defer ctrl.lock.Unlock()
-		// Add node to total
 		ctrl.nodeCount++
 
 		if region != "" && zone != "" {
-			// Add region to graph
-			// ctrl.regionGraph.AddEdge(region, region, 0)
-
-			// Add zone to graph
-			// ctrl.zoneGraph.AddEdge(zone, zone, 0)
-
-			// Add the region / zone to the map
 			ctrl.topologyMap[util.TopologyKey{
 				Region: region,
 				Zone:   zone}] = true
 		}
-
-		// Add node to graph
-		// ctrl.nodeGraph.AddEdge(node.Name, node.Name, 0)
-
 	}()
-	klog.V(5).Infof("Added node %v - Total node count: %v", node.Name, ctrl.nodeCount)
-	return
+	klog.V(5).Infof("Added node %v (region=%v zone=%v segment=%v) - Total node count: %v",
+		node.Name, region, zone, segment, ctrl.nodeCount)
+
+	if hasTopology {
+		ctrl.enqueueAllNTs()
+	}
 }
 
 // nodeUpdated reacts to a node update
@@ -319,27 +314,40 @@ func (ctrl *NetworkTopologyController) enqueueAllNTs() {
 func (ctrl *NetworkTopologyController) nodeDeleted(obj interface{}) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
-		klog.Error("unexpected object type in node deleted")
-		return
+		// Handle tombstone objects emitted by the informer when the watch is re-synced.
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			klog.Error("unexpected object type in node deleted")
+			return
+		}
+		node, ok = tombstone.Obj.(*v1.Node)
+		if !ok {
+			klog.Error("unexpected object type in node deleted tombstone")
+			return
+		}
 	}
 
-	_, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-	if err != nil {
-		runtime.HandleError(err)
-		return
-	}
+	region := util.GetNodeLabel(node, v1.LabelTopologyRegion)
+	zone := util.GetNodeLabel(node, v1.LabelTopologyZone)
+	segment := util.GetNodeLabel(node, string(v1alpha1.NetworkTopologySegment))
+
+	hasTopology := region != "" || zone != "" || segment != ""
 
 	func() {
 		ctrl.lock.Lock()
 		defer ctrl.lock.Unlock()
-		// Remove node from total
 		ctrl.nodeCount--
-
-		// Remove all Edges from graph
-		// ctrl.nodeGraph.RemoveEdge(node.Name)
+		if region != "" && zone != "" {
+			delete(ctrl.topologyMap, util.TopologyKey{Region: region, Zone: zone})
+		}
 	}()
 
-	klog.V(5).Infof("Removed node %v - Total node count: %v", node.Name, ctrl.nodeCount)
+	klog.V(5).Infof("Removed node %v (region=%v zone=%v segment=%v) - Total node count: %v",
+		node.Name, region, zone, segment, ctrl.nodeCount)
+
+	if hasTopology {
+		ctrl.enqueueAllNTs()
+	}
 }
 
 // podAdded reacts to a Pod creation
